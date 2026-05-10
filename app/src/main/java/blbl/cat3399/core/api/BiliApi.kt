@@ -626,6 +626,10 @@ object BiliApi {
             }
             out
         }
+        run {
+            val sample = folders.take(8).joinToString { "${it.mediaId}:${it.title}(${it.mediaCount})" }
+            AppLog.i("BlblFavSeason", "favFolders type=2 up_mid=$upMid count=${folders.size} sample=[$sample]")
+        }
         val missingIndices = folders.withIndex().filter { it.value.coverUrl.isNullOrBlank() }.map { it.index }
         if (missingIndices.isEmpty()) return folders
 
@@ -773,6 +777,447 @@ object BiliApi {
                 out
             }
         return HasMorePage(items = cards, page = pn.coerceAtLeast(1), hasMore = hasMore, total = total)
+    }
+
+    /**
+     * 收藏夹内容里 `type=21` 表示「视频合集」条目（与 Web「收藏-合集」一致），见 `docs/fav/list.md`。
+     * 请求方式与 [favFolderResources] 相同：`BiliClient.getJson` + Cookie。
+     */
+    data class FavSeasonSubscribeResource(
+        val seasonId: Long,
+        val title: String,
+        val coverUrl: String?,
+        val ownerMid: Long,
+        /** 若接口直接带 BV，则可直接进详情；否则用 [seasonId]+[ownerMid] 拉 [ugcSeasonArchives] 取首条 */
+        val directBvid: String?,
+    )
+
+    /**
+     * 解析「订阅的合集」所在收藏夹 `media_id`（与「收藏」Tab 同源接口 `created/list-all`）。
+     * 优先读 `data.season`，再按标题启发式匹配（站方可能调整文案）。
+     * 若仍无法识别，则对已创建的收藏夹顺序调用 [favSeasonSubscribeResourcePage]（只认 `type=21`）做少量探测。
+     */
+    suspend fun favSeasonSubscribeFolderMediaId(upMid: Long): Long? {
+        if (upMid <= 0L) return null
+        val url =
+            BiliClient.withQuery(
+                "https://api.bilibili.com/x/v3/fav/folder/created/list-all",
+                mapOf(
+                    "up_mid" to upMid.toString(),
+                    "web_location" to "333.1387",
+                ),
+            )
+        val json = BiliClient.getJson(url)
+        val code = json.optInt("code", 0)
+        if (code != 0) {
+            AppLog.w(
+                "BlblFavSeason",
+                "list-all(no type) code=$code msg=${json.optString("message", json.optString("msg", ""))} up_mid=$upMid",
+            )
+            return null
+        }
+        val data = json.optJSONObject("data")
+        if (data == null) {
+            AppLog.w("BlblFavSeason", "list-all data=null up_mid=$upMid (未登录或无权访问时常见)")
+            return null
+        }
+        val seasonRoot = data.optJSONObject("season")
+        if (seasonRoot != null) {
+            val folderObj = seasonRoot.optJSONObject("folder")
+            val id =
+                jsonPositiveLong(seasonRoot, "id", "media_id", "mlid")
+                    ?: folderObj?.let { jsonPositiveLong(it, "id", "media_id", "mlid") }
+            if (id != null) {
+                AppLog.i("BlblFavSeason", "season folder from data.season id=$id up_mid=$upMid")
+                return id
+            }
+            AppLog.w("BlblFavSeason", "list-all data.season present but no id parsed up_mid=$upMid keys=${seasonRoot.keys().asSequence().take(12).joinToString()}")
+        }
+        val list = data.optJSONArray("list") ?: JSONArray()
+        val hints =
+            listOf(
+                "订阅合集",
+                "合集订阅",
+                "追更的合集",
+                "订阅的合集",
+                "追更合集",
+                "我的追更",
+            )
+        for (i in 0 until list.length()) {
+            val obj = list.optJSONObject(i) ?: continue
+            val title = obj.optString("title", "").trim()
+            val id = favCreatedFolderMediaId(obj) ?: continue
+            if (hints.any { title.contains(it) }) {
+                AppLog.i("BlblFavSeason", "season folder from list title=\"$title\" id=$id up_mid=$upMid")
+                return id
+            }
+            if (title.contains("合集") && (title.contains("订阅") || title.contains("追更"))) {
+                AppLog.i("BlblFavSeason", "season folder from list heuristic title=\"$title\" id=$id up_mid=$upMid")
+                return id
+            }
+        }
+        val withContent = LinkedHashMap<Long, String>()
+        for (i in 0 until list.length()) {
+            val obj = list.optJSONObject(i) ?: continue
+            val id = favCreatedFolderMediaId(obj) ?: continue
+            if (obj.optInt("media_count", 0) <= 0) continue
+            val title = obj.optString("title", "").trim()
+            withContent.putIfAbsent(id, title)
+        }
+        val probeOrder =
+            withContent.entries.sortedWith(
+                compareBy<Map.Entry<Long, String>>(
+                    { e -> !(e.value.contains("订阅") && e.value.contains("合集")) },
+                    { e -> !e.value.contains("合集") },
+                    { e -> e.key },
+                ),
+            )
+        for ((mediaId, title) in probeOrder.take(24)) {
+            val page =
+                runCatching { favSeasonSubscribeResourcePage(mediaId = mediaId, pn = 1, ps = 20) }.getOrNull()
+                    ?: continue
+            if (page.items.isNotEmpty()) {
+                AppLog.i(
+                    "BlblFavSeason",
+                    "season folder from type21 probe media_id=$mediaId title=\"$title\" up_mid=$upMid type21=${page.items.size}",
+                )
+                return mediaId
+            }
+        }
+        val titleDump = StringBuilder()
+        for (i in 0 until list.length()) {
+            val obj = list.optJSONObject(i) ?: continue
+            val title = obj.optString("title", "").trim()
+            val id = favCreatedFolderMediaId(obj) ?: continue
+            if (titleDump.isNotEmpty()) titleDump.append(" | ")
+            titleDump.append(id).append(':').append(title)
+            if (titleDump.length > 900) break
+        }
+        AppLog.w(
+            "BlblFavSeason",
+            "no season fav folder matched; list_len=${list.length()} up_mid=$upMid probed=${probeOrder.size} folder_titles=[$titleDump]",
+        )
+        return null
+    }
+
+    /** list-all 里单个收藏夹条目的 `id`（mlid），兼容字符串数字。 */
+    private fun favCreatedFolderMediaId(obj: JSONObject): Long? = jsonPositiveLong(obj, "id", "media_id", "mlid")
+
+    private fun jsonPositiveLong(obj: JSONObject, vararg keys: String): Long? {
+        for (k in keys) {
+            if (!obj.has(k)) continue
+            when (val v = obj.opt(k)) {
+                is Number -> {
+                    val n = v.toLong()
+                    if (n > 0L) return n
+                }
+                is String -> v.trim().toLongOrNull()?.takeIf { it > 0L }?.let { return it }
+                else -> Unit
+            }
+        }
+        return null
+    }
+
+    /**
+     * 分页读取「订阅合集」收藏夹内 `type=21` 条目（[favFolderResources] 同源 `resource/list`）。
+     */
+    suspend fun favSeasonSubscribeResourcePage(
+        mediaId: Long,
+        pn: Int = 1,
+        ps: Int = 20,
+    ): HasMorePage<FavSeasonSubscribeResource> {
+        if (mediaId <= 0L) error("fav_season_subscribe_invalid_media_id")
+        val safePn = pn.coerceAtLeast(1)
+        val safePs = ps.coerceIn(1, 20)
+        val url =
+            BiliClient.withQuery(
+                "https://api.bilibili.com/x/v3/fav/resource/list",
+                mapOf(
+                    "media_id" to mediaId.toString(),
+                    "pn" to safePn.toString(),
+                    "ps" to safePs.toString(),
+                    "order" to "mtime",
+                    "type" to "0",
+                    "platform" to "web",
+                ),
+            )
+        val json = BiliClient.getJson(url)
+        val code = json.optInt("code", 0)
+        if (code != 0) {
+            val msg = json.optString("message", json.optString("msg", ""))
+            throw BiliApiException(apiCode = code, apiMessage = msg)
+        }
+        val data = json.optJSONObject("data") ?: JSONObject()
+        val medias = data.optJSONArray("medias") ?: JSONArray()
+        val hasMore = data.optBoolean("has_more", false)
+        val total = data.optJSONObject("info")?.optInt("media_count", 0) ?: 0
+        val items =
+            withContext(Dispatchers.Default) {
+                val out = ArrayList<FavSeasonSubscribeResource>(medias.length())
+                for (i in 0 until medias.length()) {
+                    val obj = medias.optJSONObject(i) ?: continue
+                    if (obj.optInt("type", -1) != 21) continue
+                    val seasonId = obj.optLong("id").takeIf { it > 0 } ?: continue
+                    val upper = obj.optJSONObject("upper") ?: JSONObject()
+                    val ownerMid = upper.optLong("mid").takeIf { it > 0 } ?: continue
+                    val title = obj.optString("title", "").trim()
+                    if (title.isBlank()) continue
+                    val cover = obj.optString("cover", "").trim().takeIf { it.isNotBlank() }
+                    val bvid =
+                        obj.optString("bvid", "").trim().takeIf { it.isNotBlank() }
+                            ?: obj.optString("bv_id", "").trim().takeIf { it.isNotBlank() }
+                    out.add(
+                        FavSeasonSubscribeResource(
+                            seasonId = seasonId,
+                            title = title,
+                            coverUrl = cover,
+                            ownerMid = ownerMid,
+                            directBvid = bvid,
+                        ),
+                    )
+                }
+                out
+            }
+        AppLog.i(
+            "BlblFavSeason",
+            "resource/list media_id=$mediaId pn=$safePn ps=$safePs -> seasons=${items.size} hasMore=$hasMore total=$total",
+        )
+        return HasMorePage(items = items, page = safePn, hasMore = hasMore, total = total)
+    }
+
+    /**
+     * 收藏夹 mlid 与创建者 mid 满足 `id % 100 == mid % 100`（见 `docs/fav/info.md` 示例）；
+     * 不满足时 `id` 多为「视频合集」season_id，可与 `collected/list` + `platform=web` 混排区分。
+     */
+    private fun isFavoriteFolderMlidForCreator(folderId: Long, creatorMid: Long): Boolean {
+        if (folderId <= 0L || creatorMid <= 0L) return false
+        return folderId % 100L == creatorMid % 100L
+    }
+
+    /**
+     * 当前用户「收藏/订阅」列表（含视频合集）：`GET /x/v3/fav/folder/collected/list`（`docs/fav/info.md`）。
+     * 必须带 `platform=web`，否则不含合集条目。
+     *
+     * 与普通「收藏的他人收藏夹」混在同一 `list`；本方法用 mlid 同余规则过滤掉收藏夹，
+     * 将剩余条目的 `id` 视为 UGC 合集 `season_id`（另有 `season_id` / `type=21` 时优先）。
+     */
+    suspend fun favFolderCollectedUgcSeasonPage(
+        upMid: Long,
+        pn: Int = 1,
+        ps: Int = 20,
+    ): HasMorePage<FavSeasonSubscribeResource> {
+        if (upMid <= 0L) {
+            return HasMorePage(items = emptyList(), page = 1, hasMore = false, total = 0)
+        }
+        val safePn = pn.coerceAtLeast(1)
+        val safePs = ps.coerceIn(1, 40)
+        val url =
+            BiliClient.withQuery(
+                "https://api.bilibili.com/x/v3/fav/folder/collected/list",
+                mapOf(
+                    "up_mid" to upMid.toString(),
+                    "pn" to safePn.toString(),
+                    "ps" to safePs.toString(),
+                    "platform" to "web",
+                    "web_location" to "333.1387",
+                ),
+            )
+        val json = BiliClient.getJson(url)
+        val code = json.optInt("code", 0)
+        if (code != 0) {
+            AppLog.w(
+                "BlblFavSeason",
+                "collected/list code=$code msg=${json.optString("message", json.optString("msg", ""))} up_mid=$upMid",
+            )
+            return HasMorePage(items = emptyList(), page = safePn, hasMore = false, total = 0)
+        }
+        val data = json.optJSONObject("data") ?: JSONObject()
+        val list = data.optJSONArray("list") ?: JSONArray()
+        val count = data.optInt("count", 0)
+        val listLen = list.length()
+        val items =
+            withContext(Dispatchers.Default) {
+                val out = ArrayList<FavSeasonSubscribeResource>(listLen)
+                var rawFolders = 0
+                for (i in 0 until listLen) {
+                    val obj = list.optJSONObject(i) ?: continue
+                    if (obj.optInt("state", 0) != 0) continue
+                    val rowId = jsonPositiveLong(obj, "id", "media_id", "mlid") ?: continue
+                    val upper = obj.optJSONObject("upper") ?: JSONObject()
+                    val creatorMid =
+                        upper.optLong("mid").takeIf { it > 0L }
+                            ?: obj.optLong("mid").takeIf { it > 0L }
+                            ?: continue
+                    val seasonFromSeasonObj =
+                        obj.optJSONObject("season")?.let { jsonPositiveLong(it, "id", "season_id", "seasonid") }
+                    val explicitSeasonId = jsonPositiveLong(obj, "season_id", "seasonid", "seasonId")
+                    val typeField = obj.optInt("type", -1)
+                    val seasonId: Long? =
+                        when {
+                            seasonFromSeasonObj != null -> seasonFromSeasonObj
+                            explicitSeasonId != null -> explicitSeasonId
+                            typeField == 21 -> rowId
+                            !isFavoriteFolderMlidForCreator(rowId, creatorMid) -> rowId
+                            else -> {
+                                rawFolders++
+                                null
+                            }
+                        }
+                    if (seasonId == null || seasonId <= 0L) continue
+                    val title = obj.optString("title", "").trim()
+                    if (title.isBlank()) continue
+                    val cover = obj.optString("cover", "").trim().takeIf { it.isNotBlank() }
+                    val bvid =
+                        obj.optString("bvid", "").trim().takeIf { it.isNotBlank() }
+                            ?: obj.optString("bv_id", "").trim().takeIf { it.isNotBlank() }
+                    out.add(
+                        FavSeasonSubscribeResource(
+                            seasonId = seasonId,
+                            title = title,
+                            coverUrl = cover,
+                            ownerMid = creatorMid,
+                            directBvid = bvid,
+                        ),
+                    )
+                }
+                if (rawFolders > 0 || out.isNotEmpty()) {
+                    AppLog.i(
+                        "BlblFavSeason",
+                        "collected/list up_mid=$upMid pn=$safePn ps=$safePs raw=$listLen folders_skipped=$rawFolders ugc_seasons=${out.size} count=$count",
+                    )
+                }
+                out
+            }
+        val hasMore =
+            when {
+                count > 0 -> (safePn - 1) * safePs + listLen < count
+                else -> listLen >= safePs
+            }
+        return HasMorePage(items = items, page = safePn, hasMore = hasMore, total = count)
+    }
+
+    /**
+     * 空间收藏 Web 同源：某「视频合集」在收藏视角下的分集列表（与浏览器
+     * `https://space.bilibili.com/{mid}/favlist?ftype=collect&ctype=21` + `season_id` 一致）。
+     * 需带登录 Cookie；请求头需 [Origin]/[Referer] 指向 space。
+     */
+    data class SpaceFavSeasonListEntry(
+        val bvid: String,
+        val cid: Long?,
+        val title: String,
+        val ownerMid: Long,
+    )
+
+    suspend fun spaceFavSeasonListPage(
+        seasonId: Long,
+        viewerMid: Long,
+        pn: Int = 1,
+        ps: Int = 36,
+    ): HasMorePage<SpaceFavSeasonListEntry> {
+        if (seasonId <= 0L || viewerMid <= 0L) error("space_fav_season_invalid_ids")
+        val safePn = pn.coerceAtLeast(1)
+        val safePs = ps.coerceIn(1, 100)
+        val url =
+            BiliClient.withQuery(
+                "https://api.bilibili.com/x/space/fav/season/list",
+                mapOf(
+                    "season_id" to seasonId.toString(),
+                    "pn" to safePn.toString(),
+                    "ps" to safePs.toString(),
+                    "web_location" to "333.1387",
+                ),
+            )
+        val headers =
+            mapOf(
+                "Origin" to "https://space.bilibili.com",
+                "Referer" to "https://space.bilibili.com/$viewerMid/favlist?ftype=collect&ctype=21",
+            )
+        val json = BiliClient.getJson(url, headers = headers)
+        val code = json.optInt("code", 0)
+        if (code != 0) {
+            val msg = json.optString("message", json.optString("msg", ""))
+            throw BiliApiException(apiCode = code, apiMessage = msg)
+        }
+        val data = json.optJSONObject("data") ?: JSONObject()
+        val info = data.optJSONObject("info") ?: JSONObject()
+        val total = info.optInt("media_count", 0).coerceAtLeast(0)
+        val medias = data.optJSONArray("medias") ?: JSONArray()
+        val items =
+            withContext(Dispatchers.Default) {
+                val out = ArrayList<SpaceFavSeasonListEntry>(medias.length())
+                for (i in 0 until medias.length()) {
+                    val obj = medias.optJSONObject(i) ?: continue
+                    val bvid =
+                        obj.optString("bvid", "").trim().takeIf { it.isNotBlank() }
+                            ?: obj.optString("bv_id", "").trim().takeIf { it.isNotBlank() }
+                            ?: continue
+                    val upper = obj.optJSONObject("upper") ?: JSONObject()
+                    val ownerMid = upper.optLong("mid").takeIf { it > 0 } ?: continue
+                    val title = obj.optString("title", "").trim()
+                    val cid = obj.optLong("cid").takeIf { it > 0 }
+                    out.add(SpaceFavSeasonListEntry(bvid = bvid, cid = cid, title = title, ownerMid = ownerMid))
+                }
+                out
+            }
+        val loaded = (safePn - 1) * safePs + items.size
+        val hasMore = items.isNotEmpty() && loaded < total
+        AppLog.i(
+            "BlblFavSeason",
+            "space/fav/season/list season_id=$seasonId viewer=$viewerMid pn=$safePn ps=$safePs entries=${items.size} hasMore=$hasMore total=$total",
+        )
+        return HasMorePage(items = items, page = safePn, hasMore = hasMore, total = total)
+    }
+
+    /**
+     * 遍历「已创建收藏夹」下 [favSeasonSubscribeResourcePage]（仅 `type=21`），汇总去重后的合集条目。
+     * 用于「订阅合集」系统夹不在 [favSeasonSubscribeFolderMediaId] 可识别标题时的兜底（与 Web 收藏-合集数据源对齐）。
+     */
+    suspend fun favScanAllCreatedFoldersType21(
+        upMid: Long,
+        maxSeasons: Int = 200,
+        maxPagesPerFolder: Int = 12,
+        maxFolders: Int = 40,
+    ): List<FavSeasonSubscribeResource> {
+        if (upMid <= 0L) return emptyList()
+        val url =
+            BiliClient.withQuery(
+                "https://api.bilibili.com/x/v3/fav/folder/created/list-all",
+                mapOf(
+                    "up_mid" to upMid.toString(),
+                    "web_location" to "333.1387",
+                ),
+            )
+        val json = BiliClient.getJson(url)
+        if (json.optInt("code", 0) != 0) return emptyList()
+        val data = json.optJSONObject("data") ?: return emptyList()
+        val list = data.optJSONArray("list") ?: JSONArray()
+        val acc = LinkedHashMap<Long, FavSeasonSubscribeResource>()
+        var foldersTouched = 0
+        outer@ for (i in 0 until list.length()) {
+            if (acc.size >= maxSeasons) break
+            if (foldersTouched >= maxFolders) break
+            val folder = list.optJSONObject(i) ?: continue
+            val mediaId = favCreatedFolderMediaId(folder) ?: continue
+            if (folder.optInt("media_count", 0) <= 0) continue
+            foldersTouched++
+            var pn = 1
+            while (pn <= maxPagesPerFolder && acc.size < maxSeasons) {
+                val page =
+                    runCatching { favSeasonSubscribeResourcePage(mediaId = mediaId, pn = pn, ps = 20) }.getOrNull()
+                        ?: break
+                for (it in page.items) {
+                    acc.putIfAbsent(it.seasonId, it)
+                    if (acc.size >= maxSeasons) break@outer
+                }
+                if (!page.hasMore) break
+                pn++
+            }
+        }
+        AppLog.i(
+            "BlblFavSeason",
+            "favScanAllCreatedFoldersType21 up_mid=$upMid folders=$foldersTouched unique_seasons=${acc.size}",
+        )
+        return acc.values.toList()
     }
 
     suspend fun bangumiFollowList(

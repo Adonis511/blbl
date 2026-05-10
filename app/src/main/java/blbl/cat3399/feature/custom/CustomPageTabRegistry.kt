@@ -54,6 +54,7 @@ object CustomPageTabRegistry {
     const val TYPE_DYNAMIC_VIDEO = "dynamic_video"
     const val TYPE_MY_HISTORY = "my_history"
     const val TYPE_MY_FAV = "my_fav"
+    const val TYPE_MY_COLLECTIONS = "my_collections"
     const val TYPE_MY_BANGUMI = "my_bangumi"
     const val TYPE_MY_DRAMA = "my_drama"
     const val TYPE_MY_TOVIEW = "my_toview"
@@ -246,6 +247,7 @@ object CustomPageTabRegistry {
             add(CustomPageTabConfig(sourceType = TYPE_LIVE_FOLLOWING))
             add(CustomPageTabConfig(sourceType = TYPE_MY_HISTORY))
             add(CustomPageTabConfig(sourceType = TYPE_MY_FAV))
+            add(CustomPageTabConfig(sourceType = TYPE_MY_COLLECTIONS))
             add(CustomPageTabConfig(sourceType = TYPE_MY_BANGUMI))
             add(CustomPageTabConfig(sourceType = TYPE_MY_DRAMA))
             add(CustomPageTabConfig(sourceType = TYPE_MY_TOVIEW))
@@ -396,6 +398,17 @@ object CustomPageTabRegistry {
                     itemOrder = 20,
                     requiresLogin = true,
                     createFragment = { CustomMyPageHostFragment.newFav() },
+                )
+
+            TYPE_MY_COLLECTIONS ->
+                Descriptor(
+                    stableKey = TYPE_MY_COLLECTIONS,
+                    managerLabel = "我的-合集",
+                    tabTitle = "合集",
+                    groupKey = GROUP_MY,
+                    itemOrder = 25,
+                    requiresLogin = true,
+                    createFragment = { CustomMyPageHostFragment.newCollections() },
                 )
 
             TYPE_MY_BANGUMI ->

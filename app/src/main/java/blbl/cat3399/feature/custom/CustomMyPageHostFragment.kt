@@ -13,6 +13,7 @@ import blbl.cat3399.feature.my.BangumiDetailActivity
 import blbl.cat3399.feature.my.MyBangumiFollowFragment
 import blbl.cat3399.feature.my.MyFavFolderDetailFragment
 import blbl.cat3399.feature.my.MyFavFoldersFragment
+import blbl.cat3399.feature.my.MyFollowedCollectionsFragment
 import blbl.cat3399.feature.my.MyHistoryFragment
 import blbl.cat3399.feature.my.MyLikeFragment
 import blbl.cat3399.feature.my.MyNavigator
@@ -118,6 +119,7 @@ class CustomMyPageHostFragment : Fragment(), MyNavigator, BackPressHandler, Refr
         return when (pageKind) {
             KIND_HISTORY -> MyHistoryFragment()
             KIND_FAV -> MyFavFoldersFragment()
+            KIND_COLLECTIONS -> MyFollowedCollectionsFragment()
             KIND_BANGUMI -> MyBangumiFollowFragment.newInstance(type = 1)
             KIND_DRAMA -> MyBangumiFollowFragment.newInstance(type = 2)
             KIND_TO_VIEW -> MyToViewFragment()
@@ -131,6 +133,7 @@ class CustomMyPageHostFragment : Fragment(), MyNavigator, BackPressHandler, Refr
 
         private const val KIND_HISTORY = "history"
         private const val KIND_FAV = "fav"
+        private const val KIND_COLLECTIONS = "collections"
         private const val KIND_BANGUMI = "bangumi"
         private const val KIND_DRAMA = "drama"
         private const val KIND_TO_VIEW = "to_view"
@@ -139,6 +142,8 @@ class CustomMyPageHostFragment : Fragment(), MyNavigator, BackPressHandler, Refr
         fun newHistory() = newInstance(KIND_HISTORY)
 
         fun newFav() = newInstance(KIND_FAV)
+
+        fun newCollections() = newInstance(KIND_COLLECTIONS)
 
         fun newBangumi() = newInstance(KIND_BANGUMI)
 

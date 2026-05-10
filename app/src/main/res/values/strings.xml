@@ -18,6 +18,9 @@
 
     <string name="my_tab_history">历史</string>
     <string name="my_tab_fav">收藏</string>
+    <string name="my_tab_collections">合集</string>
+    <string name="my_collection_kind_season">视频合集</string>
+    <string name="my_collection_kind_series">视频列表</string>
     <string name="my_tab_bangumi">追番</string>
     <string name="my_tab_drama">追剧</string>
     <string name="my_tab_toview">稍后再看</string>

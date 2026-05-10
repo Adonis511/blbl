@@ -7,6 +7,8 @@ plugins {
 android {
     namespace = "blbl.cat3399"
     compileSdk = 36
+    // 与已安装的 Android SDK Build-Tools 对齐（本机常见仅有 36.x/37.x，无 34.0.0）
+    buildToolsVersion = "36.1.0"
 
     fun propOrEnv(name: String): String? {
         val fromProp = project.findProperty(name) as String?
@@ -28,12 +30,15 @@ android {
         }
     }
 
+    val releaseKeystoreFile = rootProject.file("keystore/release.keystore")
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file("keystore/release.keystore")
-            storePassword = propOrEnv("RELEASE_STORE_PASSWORD")
-            keyAlias = propOrEnv("RELEASE_KEY_ALIAS")
-            keyPassword = propOrEnv("RELEASE_KEY_PASSWORD")
+        if (releaseKeystoreFile.isFile) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = propOrEnv("RELEASE_STORE_PASSWORD")
+                keyAlias = propOrEnv("RELEASE_KEY_ALIAS")
+                keyPassword = propOrEnv("RELEASE_KEY_PASSWORD")
+            }
         }
     }
 
@@ -44,7 +49,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            // CI 会生成 keystore；本地未配置时用 debug 签名以便仍能跑通 assembleRelease 做编译验证
+            signingConfig =
+                signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

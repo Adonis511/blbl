@@ -309,6 +309,7 @@ internal class WebVideoApi(
                 headers = transport.webHeaders(targetUrl = url, includeCookie = true),
                 noCookies = true,
             )
+        logSeasonsSeriesListResponse(request = safeRequest, json = json)
         checkApiCode(json)
         val data = json.optJSONObject("data") ?: JSONObject()
         return withContext(Dispatchers.Default) { mapper.parseCollectionSections(data = data, request = safeRequest) }
@@ -471,6 +472,52 @@ internal class WebVideoApi(
         if (code != 0) {
             val msg = json.optString("message", json.optString("msg", ""))
             throw BiliApiException(apiCode = code, apiMessage = msg)
+        }
+    }
+
+    /**
+     * 诊断「我的-合集」列表为空：记录 [GET /x/polymer/web-space/seasons_series_list]（WBI 签名）的请求参数与原始 JSON 摘要。
+     * Logcat 过滤：`tag:BLBL` 或 `PolymerSeasonsSeries`。
+     */
+    private fun logSeasonsSeriesListResponse(
+        request: VideoCollectionSectionsRequest,
+        json: JSONObject,
+    ) {
+        val code = json.optInt("code", Int.MIN_VALUE)
+        val apiMsg = json.optString("message", json.optString("msg", "")).trim()
+        val data = json.optJSONObject("data")
+        val lists = data?.optJSONObject("items_lists")
+        val pageObj = lists?.optJSONObject("page")
+        val totalPages = pageObj?.optInt("total", -1) ?: -1
+        val seasonArr = lists?.optJSONArray("seasons_list")
+        val seriesArr = lists?.optJSONArray("series_list")
+        val seasonN = seasonArr?.length() ?: 0
+        val seriesN = seriesArr?.length() ?: 0
+        val firstSeasonArchivesLen =
+            if (seasonN > 0) {
+                seasonArr?.optJSONObject(0)?.optJSONArray("archives")?.length() ?: 0
+            } else {
+                0
+            }
+        val firstMetaName =
+            if (seasonN > 0) {
+                (seasonArr?.optJSONObject(0)?.optJSONObject("meta")?.optString("name", "") ?: "").trim().take(48)
+            } else {
+                ""
+            }
+        val summary =
+            "seasons_series_list mid=${request.mid} page_num=${request.pageNum} page_size=${request.pageSize} " +
+                "-> code=$code msg=${apiMsg.ifBlank { "-" }} dataNull=${data == null} " +
+                "total_pages=$totalPages seasons_list.size=$seasonN series_list.size=$seriesN " +
+                "first_season_archives_len=$firstSeasonArchivesLen first_meta_name=${firstMetaName.ifBlank { "-" }}"
+        if (code != 0) {
+            AppLog.w("PolymerSeasonsSeries", summary)
+            AppLog.w("PolymerSeasonsSeries", "raw_json_clip=${json.toString().take(3500)}")
+        } else {
+            AppLog.i("PolymerSeasonsSeries", summary)
+            if (seasonN == 0 && seriesN == 0) {
+                AppLog.i("PolymerSeasonsSeries", "raw_json_clip=${json.toString().take(3500)}")
+            }
         }
     }
 
