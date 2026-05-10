@@ -7,10 +7,12 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
 import blbl.cat3399.R
+import blbl.cat3399.core.api.video.VideoCollectionKind
 import blbl.cat3399.core.ui.TabContentFocusTarget
 import blbl.cat3399.databinding.FragmentMyContainerBinding
 import blbl.cat3399.feature.my.BangumiDetailActivity
 import blbl.cat3399.feature.my.MyBangumiFollowFragment
+import blbl.cat3399.feature.my.MyCollectionDetailFragment
 import blbl.cat3399.feature.my.MyFavFolderDetailFragment
 import blbl.cat3399.feature.my.MyFavFoldersFragment
 import blbl.cat3399.feature.my.MyFollowedCollectionsFragment
@@ -55,6 +57,28 @@ class CustomMyPageHostFragment : Fragment(), MyNavigator, BackPressHandler, Refr
         childFragmentManager.beginTransaction()
             .setReorderingAllowed(true)
             .replace(R.id.my_container, MyFavFolderDetailFragment.newInstance(mediaId = mediaId, title = title))
+            .addToBackStack(null)
+            .commit()
+    }
+
+    override fun openSeasonDetail(
+        kind: VideoCollectionKind,
+        seasonId: Long,
+        ownerMid: Long,
+        title: String,
+    ) {
+        if (_binding == null || childFragmentManager.isStateSaved) return
+        childFragmentManager.beginTransaction()
+            .setReorderingAllowed(true)
+            .replace(
+                R.id.my_container,
+                MyCollectionDetailFragment.newInstance(
+                    kind = kind,
+                    seasonId = seasonId,
+                    ownerMid = ownerMid,
+                    title = title,
+                ),
+            )
             .addToBackStack(null)
             .commit()
     }

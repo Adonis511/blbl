@@ -39,8 +39,10 @@ import blbl.cat3399.feature.player.PlayerActivity
 import blbl.cat3399.feature.player.PlayerPlaylistContinuation
 import blbl.cat3399.feature.player.PlayerPlaylistItem
 import blbl.cat3399.feature.player.PlayerPlaylistStore
+import blbl.cat3399.feature.player.UGC_SEASON_ARCHIVE_PAGE_SIZE
 import blbl.cat3399.feature.player.VideoCardPlaylistPage
 import blbl.cat3399.feature.player.buildFreshVideoCardPlaylistContinuation
+import blbl.cat3399.feature.player.ugcSeasonArchivesPageHasMore
 import blbl.cat3399.feature.player.executeArchiveTripleAction
 import blbl.cat3399.feature.player.parseMultiPagePlaylistFromDetailWithUiCards
 import blbl.cat3399.feature.player.parseVideoCardsToPlaylistParsed
@@ -92,6 +94,8 @@ class VideoDetailActivity : BaseActivity() {
     private var currentUgcSeasonIndex: Int? = null
     private var currentUgcSeasonId: Long? = null
     private var currentUgcSeasonOwnerMid: Long? = null
+    /** 详情里 `ugc_season.ep_count`，用于合集播放列表是否还有下一页。 */
+    private var currentUgcSeasonEpTotal: Int? = null
     private var seasonOrderReversed: Boolean = false
 
     private var actionLiked: Boolean = false
@@ -320,7 +324,7 @@ class VideoDetailActivity : BaseActivity() {
             seasonCards = seasonCardsForDisplay(),
             seasonSelectedKey = resolveSeasonSelectedKey(),
             seasonOrderReversed = seasonOrderReversed,
-            recommendHeaderText = "推荐视频",
+            recommendHeaderText = recommendHeaderTextForDetail(),
         )
 
         binding.recycler.post { headerAdapter.requestFocusPlay() }
@@ -429,6 +433,7 @@ class VideoDetailActivity : BaseActivity() {
                     currentUgcSeasonIndex = null
                     currentUgcSeasonId = ugcSeason?.id?.takeIf { it > 0L }
                     currentUgcSeasonOwnerMid = ugcSeason?.ownerMid?.takeIf { it > 0L } ?: ownerMid
+                    currentUgcSeasonEpTotal = ugcSeason?.epCount?.takeIf { it > 0 }
                     if (ugcSeason != null) {
                         val parsedFromView = parseUgcSeasonPlaylistFromDetailWithUiCards(ugcSeason)
                         if (parsedFromView.items.isNotEmpty()) {
@@ -446,6 +451,8 @@ class VideoDetailActivity : BaseActivity() {
                                     val parsedFromApi = parseVideoCardsToPlaylistParsed(archivesPage.items, ::defaultVideoCardPlaylistItem)
                                     currentUgcSeasonItems = parsedFromApi.items
                                     currentUgcSeasonUiCards = parsedFromApi.uiCards
+                                    currentUgcSeasonEpTotal =
+                                        currentUgcSeasonEpTotal ?: archivesPage.totalCount?.takeIf { it > 0 }
                                 }
                             }
                         }
@@ -467,8 +474,12 @@ class VideoDetailActivity : BaseActivity() {
                                 }
                             val relatedDeferred =
                                 async(Dispatchers.IO) {
-                                    runCatching { BiliApi.archiveRelated(bvid = resolvedBvid, aid = resolvedAid) }
-                                        .getOrDefault(emptyList())
+                                    if (ugcSeason != null) {
+                                        emptyList()
+                                    } else {
+                                        runCatching { BiliApi.archiveRelated(bvid = resolvedBvid, aid = resolvedAid) }
+                                            .getOrDefault(emptyList())
+                                    }
                                 }
                             tagsDeferred.await() to relatedDeferred.await()
                         }
@@ -629,17 +640,46 @@ class VideoDetailActivity : BaseActivity() {
     ): PlayerPlaylistContinuation? {
         val seasonId = currentUgcSeasonId?.takeIf { it > 0L } ?: return null
         val mid = currentUgcSeasonOwnerMid?.takeIf { it > 0L } ?: return null
+        val pageSize = UGC_SEASON_ARCHIVE_PAGE_SIZE
+        val epCap = currentUgcSeasonEpTotal
+        val initialHasMore = cards.isNotEmpty() && (epCap?.let { cards.size < it } ?: true)
+        if (!initialHasMore) return null
         return buildFreshVideoCardPlaylistContinuation(
             seedCards = cards,
             nextCursor = 1,
-            hasMore = cards.isNotEmpty(),
+            hasMore = true,
             playlistItemFactory = ::defaultVideoCardPlaylistItem,
         ) { pageNum ->
             val safePageNum = pageNum.coerceAtLeast(1)
-            val archivesPage = BiliApi.ugcSeasonArchives(mid = mid, seasonId = seasonId, pageNum = safePageNum, pageSize = 200)
-            val parsed = parseVideoCardsToPlaylistParsed(archivesPage.items, ::defaultVideoCardPlaylistItem)
-            val totalCount = archivesPage.totalCount
-            val hasMore = totalCount?.let { safePageNum * 200 < it } ?: (parsed.uiCards.size >= 200)
+            val archivesPage =
+                BiliApi.ugcSeasonArchives(
+                    mid = mid,
+                    seasonId = seasonId,
+                    pageNum = safePageNum,
+                    pageSize = pageSize,
+                )
+            val rawItems = archivesPage.items
+            val rawCount = rawItems.size
+            if (rawCount == 0) {
+                return@buildFreshVideoCardPlaylistContinuation VideoCardPlaylistPage(
+                    cards = emptyList(),
+                    nextCursor = safePageNum + 1,
+                    hasMore = false,
+                    canAdvance = false,
+                )
+            }
+            val parsed = parseVideoCardsToPlaylistParsed(rawItems, ::defaultVideoCardPlaylistItem)
+            val hasMore =
+                if (parsed.uiCards.isEmpty()) {
+                    false
+                } else {
+                    ugcSeasonArchivesPageHasMore(
+                        pageNum = safePageNum,
+                        pageSize = pageSize,
+                        rawItemsOnPage = rawCount,
+                        totalCount = archivesPage.totalCount,
+                    )
+                }
             VideoCardPlaylistPage(
                 cards = parsed.uiCards,
                 nextCursor = safePageNum + 1,
@@ -648,6 +688,8 @@ class VideoDetailActivity : BaseActivity() {
             )
         }
     }
+
+    private fun recommendHeaderTextForDetail(): String? = if (currentUgcSeasonId != null) null else "推荐视频"
 
     private fun onVideoTagClick(tag: VideoTag) {
         val safeRid = tabId?.takeIf { it > 0 }
@@ -718,7 +760,7 @@ class VideoDetailActivity : BaseActivity() {
             seasonCards = seasonCardsForDisplay(),
             seasonSelectedKey = resolveSeasonSelectedKey(),
             seasonOrderReversed = seasonOrderReversed,
-            recommendHeaderText = "推荐视频",
+            recommendHeaderText = recommendHeaderTextForDetail(),
         )
     }
 

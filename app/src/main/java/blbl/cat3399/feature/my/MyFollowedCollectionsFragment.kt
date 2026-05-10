@@ -360,6 +360,26 @@ class MyFollowedCollectionsFragment : Fragment(), MyTabSwitchFocusTarget, Refres
 
     private fun openCollectionEntry(row: MyFollowedCollectionRow) {
         val ctx = context ?: return
+        // 优先按合集/系列网格打开（与「收藏夹详情」相同的多列网格 UI）
+        val sid = row.seasonId
+        val om = row.ownerMid
+        if (sid != null && sid > 0L && om != null && om > 0L) {
+            val nav = findMyNavigator()
+            if (nav != null) {
+                AppLog.i(
+                    "BlblFavSeason",
+                    "open MyCollectionDetail kind=${row.kind} season=$sid owner=$om title=${row.title}",
+                )
+                nav.openSeasonDetail(
+                    kind = row.kind,
+                    seasonId = sid,
+                    ownerMid = om,
+                    title = row.title,
+                )
+                return
+            }
+        }
+        // 没有 seasonId/ownerMid 的退路：仅有单视频 BV，直接进视频详情。
         val direct = row.entryBvid.trim().takeIf { it.isNotBlank() }
         if (direct != null) {
             AppLog.i("BlblFavSeason", "open VideoDetail bvid=$direct title=${row.title}")
@@ -370,45 +390,8 @@ class MyFollowedCollectionsFragment : Fragment(), MyTabSwitchFocusTarget, Refres
             )
             return
         }
-        val sid = row.seasonId ?: return
-        val om = row.ownerMid ?: return
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                val nav = BiliApi.nav()
-                val viewerMid = nav.optJSONObject("data")?.optLong("mid") ?: 0L
-                if (viewerMid > 0L) {
-                    val spacePage =
-                        runCatching {
-                            BiliApi.spaceFavSeasonListPage(seasonId = sid, viewerMid = viewerMid, pn = 1, ps = 36)
-                        }.getOrNull()
-                    val pick = spacePage?.items?.firstOrNull { it.bvid.isNotBlank() }
-                    if (pick != null) {
-                        AppLog.i(
-                            "BlblFavSeason",
-                            "open VideoDetail via space/fav/season/list season=$sid viewer=$viewerMid bvid=${pick.bvid}",
-                        )
-                        startActivity(
-                            Intent(ctx, VideoDetailActivity::class.java)
-                                .putExtra(VideoDetailActivity.EXTRA_BVID, pick.bvid)
-                                .apply { pick.cid?.takeIf { it > 0L }?.let { putExtra(VideoDetailActivity.EXTRA_CID, it) } },
-                        )
-                        return@launch
-                    }
-                }
-                val arch = BiliApi.ugcSeasonArchives(mid = om, seasonId = sid, pageNum = 1, pageSize = 30)
-                val first = arch.items.firstOrNull { it.bvid.isNotBlank() } ?: error("season_empty")
-                AppLog.i("BlblFavSeason", "open VideoDetail season=$sid owner=$om first=${first.bvid} (ugcSeasonArchives)")
-                startActivity(
-                    Intent(ctx, VideoDetailActivity::class.java)
-                        .putExtra(VideoDetailActivity.EXTRA_BVID, first.bvid)
-                        .apply { first.cid?.takeIf { it > 0L }?.let { putExtra(VideoDetailActivity.EXTRA_CID, it) } },
-                )
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                AppLog.e("BlblFavSeason", "open season failed sid=$sid om=$om", t)
-                context?.let { AppToast.show(it, "打开合集失败") }
-            }
-        }
+        AppLog.w("BlblFavSeason", "open collection skipped: no seasonId/ownerMid/entryBvid title=${row.title}")
+        AppToast.show(ctx, "打开合集失败")
     }
 
     private fun restoreFocusIfNeeded() {

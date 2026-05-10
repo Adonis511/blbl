@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
 import blbl.cat3399.R
+import blbl.cat3399.core.api.video.VideoCollectionKind
 import blbl.cat3399.core.log.AppLog
 import blbl.cat3399.core.net.BiliClient
 import blbl.cat3399.core.ui.TabContentSwitchFocusHost
@@ -56,6 +57,28 @@ class MyFragment : Fragment(), BackPressHandler, MyNavigator, TabContentSwitchFo
         childFragmentManager.beginTransaction()
             .setReorderingAllowed(true)
             .replace(R.id.my_container, MyFavFolderDetailFragment.newInstance(mediaId = mediaId, title = title))
+            .addToBackStack(null)
+            .commit()
+    }
+
+    override fun openSeasonDetail(
+        kind: VideoCollectionKind,
+        seasonId: Long,
+        ownerMid: Long,
+        title: String,
+    ) {
+        if (_binding == null || childFragmentManager.isStateSaved) return
+        childFragmentManager.beginTransaction()
+            .setReorderingAllowed(true)
+            .replace(
+                R.id.my_container,
+                MyCollectionDetailFragment.newInstance(
+                    kind = kind,
+                    seasonId = seasonId,
+                    ownerMid = ownerMid,
+                    title = title,
+                ),
+            )
             .addToBackStack(null)
             .commit()
     }

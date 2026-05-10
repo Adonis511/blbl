@@ -34,6 +34,24 @@ internal data class VideoCardPlaylistPage<Cursor>(
     val canAdvance: Boolean = hasMore,
 )
 
+/** 与 `seasons_archives_list` 的 `page_size` 上限一致（当前为 200）。 */
+internal const val UGC_SEASON_ARCHIVE_PAGE_SIZE: Int = 200
+
+/**
+ * 根据接口返回的 `page.total` 与本页条数判断是否还有下一页；无 total 时仅依据本页是否「满页」推断。
+ */
+internal fun ugcSeasonArchivesPageHasMore(
+    pageNum: Int,
+    pageSize: Int,
+    rawItemsOnPage: Int,
+    totalCount: Int?,
+): Boolean {
+    if (rawItemsOnPage <= 0) return false
+    val safeTotal = totalCount?.takeIf { it > 0 } ?: return rawItemsOnPage >= pageSize
+    val loadedThrough = (pageNum - 1) * pageSize + rawItemsOnPage
+    return loadedThrough < safeTotal
+}
+
 internal fun <Cursor> buildFreshVideoCardPlaylistContinuation(
     seedCards: List<VideoCard>,
     nextCursor: Cursor,
@@ -61,18 +79,32 @@ private suspend fun <Cursor> loadFreshVideoCardPlaylistPage(
     fetchPage: suspend (cursor: Cursor) -> VideoCardPlaylistPage<Cursor>,
 ): PlayerPlaylistAppendPage<Cursor> {
     var currentCursor = cursor
-    while (true) {
+    var lastNext = cursor
+    repeat(64) {
         val page = fetchPage(currentCursor)
+        lastNext = page.nextCursor
         val visibleCards = VideoCardVisibilityFilter.filterVisibleFresh(page.cards, loadedStableKeys)
-        if (visibleCards.isNotEmpty() || !page.canAdvance) {
+        if (visibleCards.isNotEmpty()) {
             return PlayerPlaylistAppendPage(
                 cards = visibleCards,
                 nextCursor = page.nextCursor,
                 hasMore = page.hasMore,
             )
         }
+        if (!page.canAdvance || page.nextCursor == currentCursor) {
+            return PlayerPlaylistAppendPage(
+                cards = emptyList(),
+                nextCursor = page.nextCursor,
+                hasMore = false,
+            )
+        }
         currentCursor = page.nextCursor
     }
+    return PlayerPlaylistAppendPage(
+        cards = emptyList(),
+        nextCursor = lastNext,
+        hasMore = false,
+    )
 }
 
 internal fun <Cursor> buildVideoCardPlaylistContinuation(
@@ -109,7 +141,7 @@ private class VideoCardPlaylistContinuation<Cursor>(
         val currentCursor = nextCursor
         val page = fetchPage(currentCursor, loadedStableKeys)
         nextCursor = page.nextCursor
-        if (!page.hasMore || (page.cards.isEmpty() && page.nextCursor == currentCursor)) {
+        if (!page.hasMore || page.cards.isEmpty()) {
             endReached = true
         }
         val parsed = parseVideoCardsToPlaylistParsed(page.cards, playlistItemFactory)

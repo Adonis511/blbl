@@ -94,7 +94,8 @@ internal fun PlayerActivity.loadMorePlaylist(
         lifecycleScope.launch {
             var appended = false
             try {
-                while (true) {
+                var guard = 0
+                while (guard++ < 64 && continuation.hasMore) {
                     val parsed =
                         withContext(Dispatchers.IO) {
                             continuation.loadNextPage()

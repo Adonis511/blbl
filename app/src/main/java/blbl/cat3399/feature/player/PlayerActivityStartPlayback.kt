@@ -653,7 +653,9 @@ internal suspend fun PlayerActivity.refreshPartsListFromDetail(detail: VideoDeta
     if (idxFromView >= 0) {
         val continuation =
             mid?.let { ownerMid ->
-                val hasMore = totalFromView?.let { parsedFromView.items.size < it } ?: parsedFromView.items.isNotEmpty()
+                val hasMore =
+                    parsedFromView.items.isNotEmpty() &&
+                        (totalFromView?.let { parsedFromView.items.size < it } ?: true)
                 buildUgcSeasonPartsContinuation(
                     seedCards = parsedFromView.uiCards,
                     mid = ownerMid,
@@ -668,14 +670,18 @@ internal suspend fun PlayerActivity.refreshPartsListFromDetail(detail: VideoDeta
 
     val safeMid = mid ?: return
 
+    val pageSize = UGC_SEASON_ARCHIVE_PAGE_SIZE
     val archivesPage =
         withContext(Dispatchers.IO) {
-            runCatching { BiliApi.ugcSeasonArchives(mid = safeMid, seasonId = seasonId, pageSize = 200) }.getOrNull()
+            runCatching {
+                BiliApi.ugcSeasonArchives(mid = safeMid, seasonId = seasonId, pageNum = 1, pageSize = pageSize)
+            }.getOrNull()
         } ?: return
 
     val parsedFromApi = parseVideoCardsToPlaylistParsed(archivesPage.items, ::videoCardToPlaylistItem)
     val idxFromApi = pickPlaylistIndexForCurrentMedia(parsedFromApi.items, bvid = safeBvid, aid = aid, cid = cid)
     if (idxFromApi >= 0) {
+        val rawCount = archivesPage.items.size
         val totalFromApi = archivesPage.totalCount
         val continuation =
             buildUgcSeasonPartsContinuation(
@@ -683,7 +689,7 @@ internal suspend fun PlayerActivity.refreshPartsListFromDetail(detail: VideoDeta
                 mid = safeMid,
                 seasonId = seasonId,
                 nextPage = 2,
-                hasMore = totalFromApi?.let { parsedFromApi.items.size < it } ?: (parsedFromApi.items.size >= 200),
+                hasMore = ugcSeasonArchivesPageHasMore(1, pageSize, rawCount, totalFromApi),
             )
         applyPartsList(parsed = parsedFromApi, index = idxFromApi, source = "UgcSeason", continuation = continuation)
     }
@@ -710,10 +716,36 @@ private fun PlayerActivity.buildUgcSeasonPartsContinuation(
         },
     ) { pageNum ->
         val safePageNum = pageNum.coerceAtLeast(1)
-        val archivesPage = BiliApi.ugcSeasonArchives(mid = mid, seasonId = seasonId, pageNum = safePageNum, pageSize = 200)
-        val parsed = parseVideoCardsToPlaylistParsed(archivesPage.items, ::videoCardToPlaylistItem)
-        val totalCount = archivesPage.totalCount
-        val hasNext = totalCount?.let { safePageNum * 200 < it } ?: (parsed.uiCards.size >= 200)
+        val pageSize = UGC_SEASON_ARCHIVE_PAGE_SIZE
+        val archivesPage =
+            BiliApi.ugcSeasonArchives(
+                mid = mid,
+                seasonId = seasonId,
+                pageNum = safePageNum,
+                pageSize = pageSize,
+            )
+        val rawItems = archivesPage.items
+        val rawCount = rawItems.size
+        if (rawCount == 0) {
+            return@buildFreshVideoCardPlaylistContinuation VideoCardPlaylistPage(
+                cards = emptyList(),
+                nextCursor = safePageNum + 1,
+                hasMore = false,
+                canAdvance = false,
+            )
+        }
+        val parsed = parseVideoCardsToPlaylistParsed(rawItems, ::videoCardToPlaylistItem)
+        val hasNext =
+            if (parsed.uiCards.isEmpty()) {
+                false
+            } else {
+                ugcSeasonArchivesPageHasMore(
+                    pageNum = safePageNum,
+                    pageSize = pageSize,
+                    rawItemsOnPage = rawCount,
+                    totalCount = archivesPage.totalCount,
+                )
+            }
         VideoCardPlaylistPage(
             cards = parsed.uiCards,
             nextCursor = safePageNum + 1,
